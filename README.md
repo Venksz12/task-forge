@@ -1,167 +1,410 @@
-# TaskForge
-## Distributed Job Execution, Scheduling & Workflow Orchestration Platform
+# TaskForge — Distributed Job Execution & Workflow Engine
 
-TaskForge is a C++23 distributed execution platform for an academic capstone and systems-engineering portfolio. It demonstrates a cohesive control plane rather than disconnected demos.
+TaskForge is a distributed job execution and workflow orchestration platform developed using **C++23, PostgreSQL, Redis, NATS JetStream, and Next.js**. The project demonstrates practical distributed-systems concepts including concurrent job execution, priority scheduling, DAG-based workflow orchestration, fault tolerance, retries, worker failure recovery, idempotency, observability, and containerized deployment.
 
-### Architecture
+## Architecture
 
 ```text
-Next.js Dashboard
-       |
-       v
-C++23 REST Gateway (Boost.Beast/Asio)
-       |
-  +----+-------------+
-  |    |             |
-  v    v             v
-Scheduler  Job API  Worker Manager
-  |    |             |
-  +----+-------------+
-       |
-       v
-NATS JetStream ---> Worker Fleet
-       |                |
-       +-------+--------+
-               v
-       PostgreSQL / Redis
-               |
-       Prometheus / Grafana
+                         ┌──────────────────────┐
+                         │      Next.js UI      │
+                         │ TypeScript + Tailwind│
+                         └──────────┬───────────┘
+                                    │ REST
+                                    ▼
+                         ┌──────────────────────┐
+                         │    C++23 Gateway     │
+                         │ Boost.Asio / Beast   │
+                         │ Auth + Rate Limiting │
+                         └──────────┬───────────┘
+                                    │
+              ┌─────────────────────┼─────────────────────┐
+              ▼                     ▼                     ▼
+       ┌─────────────┐      ┌─────────────┐      ┌─────────────┐
+       │  Scheduler  │      │  Workflow   │      │    Worker   │
+       │ Fair Queue  │      │ DAG Engine  │      │   Runtime   │
+       └──────┬──────┘      └──────┬──────┘      └──────┬──────┘
+              │                    │                     │
+              └────────────────────┼─────────────────────┘
+                                   ▼
+                         ┌──────────────────────┐
+                         │   NATS JetStream     │
+                         │ Durable Job Events    │
+                         └──────────┬───────────┘
+                                    │
+                   ┌────────────────┼────────────────┐
+                   ▼                ▼                ▼
+             PostgreSQL           Redis          Prometheus
+             Durable State     Heartbeats/TTL      Metrics
+                                                     │
+                                                  Grafana
 ```
 
-### Engineering features
-- C++23 concurrency using `std::jthread`, `std::stop_token`, mutexes, condition variables, atomics, futures and RAII.
-- Weighted fair scheduling with HIGH/NORMAL/LOW weights 70/20/10 and a starvation bound.
-- Kahn topological sorting, cycle detection, ready-node discovery and dependency failure propagation.
-- At-least-once messaging with idempotent execution identity `(job_id, execution_id, attempt_number)`.
-- Exponential retry backoff, cap, configurable maximum attempts and jitter injection.
-- Redis TTL worker heartbeats with a 15-second liveness target and reassignment semantics.
-- REST endpoints plus protobuf/gRPC contracts.
-- PostgreSQL schema, constraints and operational indexes.
-- Prometheus-compatible metrics, request IDs and structured JSON lifecycle logs.
-- Docker multi-stage images, Compose and Kubernetes manifests.
-- GoogleTest deterministic unit tests and k6 load testing.
-- Responsive Next.js/TypeScript/Tailwind dashboard.
+TaskForge separates request handling, scheduling, workflow coordination and job execution while using PostgreSQL for durable state, Redis for ephemeral coordination and worker liveness, and NATS JetStream for durable asynchronous messaging.
 
-### Distributed-systems guarantees
-TaskForge provides **at-least-once delivery**, not exactly-once processing. Duplicate deliveries are expected. The consumer idempotency boundary uses the execution identity and a unique database constraint. External side effects should use the same idempotency key.
+## How TaskForge Works
 
-### Scheduling algorithm
-The scheduler owns FIFO queues per priority. Each scheduling round adds 70, 20 and 10 weighted deficit units. A non-empty queue with positive deficit is served and loses one unit. If any queue has waited longer than the starvation threshold, the oldest starving job is selected first. This prevents an unbounded high-priority stream from permanently starving lower priorities.
+### 1. Job Submission
 
-### DAG workflow algorithm
-Workflow validation builds adjacency lists and indegrees. Kahn's algorithm repeatedly emits zero-indegree nodes and decrements dependents. If fewer nodes are emitted than exist, a cycle exists. Runtime states are PENDING, READY, RUNNING, SUCCEEDED, FAILED and BLOCKED. Independent ready branches can run concurrently.
+A client submits a job through the REST API exposed by the C++23 Gateway.
 
-### Retry strategy
-`delay = min(max_delay, base_delay * 2^(attempt-1)) + jitter`, with the cap applied to the final value. The retry calculator is pure so tests do not sleep.
+The Gateway validates the request, authenticates the client, applies rate limiting and forwards the job into the execution pipeline.
 
-### Worker failure recovery
-Workers publish TTL heartbeats to Redis. A manager marks stale workers unavailable, identifies their RUNNING leases, requeues eligible jobs and preserves attempt/idempotency history.
+A job progresses through states such as:
 
-### REST API
-- `GET /health`
-- `GET /ready`
-- `GET /metrics`
-- `POST /api/v1/jobs`
-- `GET /api/v1/jobs`
-- `GET /api/v1/jobs/{id}`
-- `POST /api/v1/jobs/{id}/cancel`
-- `POST /api/v1/jobs/{id}/retry`
-- `POST /api/v1/workflows`
-- `GET /api/v1/workflows/{id}`
-- `GET /api/v1/workers`
-- `GET /api/v1/dlq`
-- `POST /api/v1/dlq/{id}/retry`
-
-Mutating endpoints use `Authorization: Bearer <token>`. Tokens are environment-configured; no production secret is embedded.
-
-### Local development
-
-```bash
-docker compose -f infrastructure/docker-compose.yml up --build
+```text
+SUBMITTED → QUEUED → RUNNING → SUCCEEDED
+                         │
+                         ▼
+                       FAILED
+                         │
+                         ▼
+                      RETRYING
+                         │
+                   retry exhausted
+                         ▼
+                    DEAD_LETTER
 ```
 
-Native build:
+Each job maintains execution metadata including priority, timeout, attempt number, worker assignment and timestamps.
+
+### 2. Priority Scheduling
+
+The Scheduler maintains multiple priority queues and uses **weighted fair scheduling** to prevent high-priority workloads from permanently starving lower-priority jobs.
+
+A simplified scheduling policy is:
+
+```text
+HIGH       → 70%
+NORMAL     → 20%
+LOW        → 10%
+```
+
+Within each priority level, FIFO ordering is preserved where possible. The scheduler also tracks queue depth and execution statistics for operational monitoring.
+
+### 3. Workflow Orchestration
+
+TaskForge supports workflows represented as **Directed Acyclic Graphs (DAGs)**.
+
+For example:
+
+```text
+        ┌──► Validate ──► Transform ──► Store
+        │
+Start ──┤
+        │
+        └──► Enrich ───────────────────► Store
+```
+
+Workflow dependencies are resolved using **Kahn's topological sorting algorithm**. The workflow engine detects cycles, determines which nodes are ready to execute, tracks dependency completion and propagates failures through the workflow.
+
+Independent tasks can execute concurrently when sufficient workers are available.
+
+### 4. Distributed Job Execution
+
+The Scheduler publishes executable jobs through **NATS JetStream**. Workers consume jobs using durable consumers and explicit acknowledgements.
+
+The messaging model follows **at-least-once delivery semantics**. A worker acknowledges a message only after the execution result has been durably recorded.
+
+This means duplicate delivery is possible by design, so TaskForge uses idempotency mechanisms to prevent duplicate logical execution.
+
+### 5. Idempotent Execution
+
+Each execution is associated with an execution identity consisting of the job, execution and attempt information.
+
+This allows the system to distinguish between:
+
+* a new execution,
+* a retry,
+* a redelivered message,
+* and a duplicate delivery.
+
+Idempotency is particularly important when a worker completes a task but fails before acknowledging the corresponding NATS message.
+
+### 6. Retry and Dead Letter Queue
+
+Failed jobs can be retried using **exponential backoff with jitter**.
+
+```text
+Attempt 1
+   │
+   └── failure
+        │
+        ▼
+     backoff
+        │
+Attempt 2
+   │
+   └── failure
+        │
+        ▼
+     backoff
+        │
+       ...
+        │
+        ▼
+   retry limit reached
+        │
+        ▼
+     DEAD_LETTER
+```
+
+Every attempt is recorded so that execution history can be inspected. Jobs that exhaust their retry policy are moved to the **Dead Letter Queue (DLQ)**.
+
+### 7. Worker Heartbeats and Failure Recovery
+
+Workers periodically publish heartbeat information using Redis.
+
+Redis TTL keys provide an ephemeral liveness mechanism:
+
+```text
+Worker
+   │
+   │ heartbeat
+   ▼
+ Redis TTL
+   │
+   ├── alive → worker considered healthy
+   │
+   └── TTL expires
+          │
+          ▼
+   worker considered unavailable
+          │
+          ▼
+   running jobs reassigned
+```
+
+This allows the scheduler to identify failed workers and recover jobs that were assigned to unavailable workers.
+
+## Technology Stack
+
+| Component     | Technology                   |
+| ------------- | ---------------------------- |
+| Backend       | **C++23**                    |
+| Networking    | **Boost.Asio / Boost.Beast** |
+| RPC           | **gRPC + Protocol Buffers**  |
+| Database      | **PostgreSQL 16**            |
+| Messaging     | **NATS JetStream**           |
+| Coordination  | **Redis 7**                  |
+| Frontend      | **Next.js + TypeScript**     |
+| UI            | **Tailwind CSS**             |
+| Charts        | **Recharts**                 |
+| Testing       | **GoogleTest**               |
+| Load Testing  | **k6**                       |
+| Metrics       | **Prometheus**               |
+| Dashboards    | **Grafana**                  |
+| Containers    | **Docker / Docker Compose**  |
+| Orchestration | **Kubernetes**               |
+| CI/CD         | **Jenkins**                  |
+| Build         | **CMake**                    |
+
+## C++23 Design
+
+The backend uses modern C++23 features and concurrency primitives including:
+
+* `std::jthread`
+* `std::stop_token`
+* `std::atomic`
+* `std::mutex`
+* `std::condition_variable`
+* RAII
+* smart pointers
+* scoped locking
+* move semantics
+* `std::optional`
+* `std::variant`
+* `std::chrono`
+
+These are used to build thread-safe worker pools, scheduling components and service infrastructure while maintaining clear ownership and resource-management semantics.
+
+## Data Persistence
+
+PostgreSQL acts as the durable system of record.
+
+The database contains entities such as:
+
+```text
+users
+jobs
+job_attempts
+workflows
+workflow_nodes
+workflow_dependencies
+workers
+job_events
+dead_letter_jobs
+```
+
+Foreign keys, unique constraints, status constraints, timestamps and indexes are used to maintain data integrity and support execution-history and operational queries.
+
+Redis is intentionally used for short-lived coordination data such as worker heartbeats, TTL-based liveness and rate limiting rather than as the primary source of durable job state.
+
+## API
+
+TaskForge provides REST and gRPC interfaces.
+
+Representative REST endpoints include:
+
+```text
+POST   /api/v1/jobs
+GET    /api/v1/jobs
+GET    /api/v1/jobs/{id}
+POST   /api/v1/jobs/{id}/cancel
+POST   /api/v1/jobs/{id}/retry
+
+POST   /api/v1/workflows
+GET    /api/v1/workflows/{id}
+
+GET    /api/v1/workers
+GET    /api/v1/dlq
+
+GET    /health
+GET    /ready
+GET    /metrics
+```
+
+The API layer is responsible for request validation, authentication, authorization, rate limiting and propagation of request/execution identifiers.
+
+## Observability
+
+TaskForge includes an observability layer using **Prometheus and Grafana**.
+
+Metrics cover areas such as:
+
+* job throughput
+* job success/failure
+* retry counts
+* worker count
+* queue depth
+* worker heartbeat age
+* job reassignment
+* HTTP request latency
+* HTTP error rates
+
+Structured logging and identifiers such as request ID, job ID, execution ID and worker ID make distributed operations easier to diagnose.
+
+## Web Dashboard
+
+The Next.js dashboard provides an operational view of the platform.
+
+It includes views for:
+
+* System health
+* Jobs
+* Job attempts
+* Workflows
+* DAG execution
+* Workers
+* Queue activity
+* Dead Letter Queue
+* Performance metrics
+
+The dashboard communicates with the backend APIs and presents execution and infrastructure information in a single interface.
+
+## Deployment
+
+TaskForge is designed to run using Docker Compose for local development and Kubernetes for container orchestration.
+
+The development environment includes:
+
+```text
+Gateway
+Scheduler
+Worker
+Frontend
+PostgreSQL
+Redis
+NATS
+Prometheus
+Grafana
+```
+
+Kubernetes manifests provide deployments, services, health probes, resource configuration and horizontal scaling configuration.
+
+## Testing
+
+The project includes automated tests for important system components, including:
+
+* DAG construction and cycle detection
+* Topological ordering
+* Scheduling fairness
+* Retry and backoff logic
+* Thread-pool concurrency
+* Job execution behavior
+* Integration-level service behavior
+
+A **k6** load-testing suite is also included for evaluating API and job-submission performance under controlled workloads.
+
+Performance claims should be based on measurements obtained from the target execution environment rather than predetermined benchmark numbers.
+
+## Distributed Systems Properties
+
+TaskForge focuses on several practical distributed-systems concepts:
+
+* **At-least-once message delivery**
+* **Idempotent job execution**
+* **Fault detection**
+* **Worker failure recovery**
+* **Durable job state**
+* **Retry and backoff**
+* **Dead Letter Queue processing**
+* **Priority-aware scheduling**
+* **Starvation prevention**
+* **DAG dependency management**
+* **Concurrent task execution**
+* **Distributed coordination**
+* **Observability**
+
+The system does not rely on exactly-once message delivery. Instead, it assumes duplicate delivery can occur and uses durable state and idempotency to make processing safe.
+
+## Project Structure
+
+```text
+TaskForge/
+├── CMakeLists.txt
+├── Makefile
+├── README.md
+│
+├── apps/
+│   ├── gateway/
+│   ├── scheduler/
+│   └── worker/
+│
+├── include/
+│   └── taskforge/
+│
+├── src/
+│   ├── common/
+│   ├── db/
+│   ├── messaging/
+│   ├── scheduler/
+│   ├── workflow/
+│   └── worker/
+│
+├── proto/
+├── database/
+├── frontend/
+├── tests/
+├── loadtests/
+├── docker/
+├── k8s/
+├── monitoring/
+└── docs/
+```
+
+## Building
+
+TaskForge uses CMake as its primary build system.
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DTASKFORGE_BUILD_TESTS=ON
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
-ctest --test-dir build --output-on-failure
 ```
 
-Frontend:
+For local development, Docker Compose can be used to start the supporting infrastructure and application services.
 
 ```bash
-cd frontend
-npm install
-npm run dev
+docker compose up --build
 ```
 
-### Database
-PostgreSQL 16 is the durable source of truth. UUIDs support distributed creation. The dispatch index `(status, priority, created_at)` supports queue-oriented scans. `job_attempts` has a unique `(job_id, execution_id, attempt_number)` constraint that closes the concurrent duplicate-execution race.
-
-### Redis
-Redis is used for TTL worker heartbeats, rate-limit counters, short-lived cache and coordination state. Heartbeat keys should expire automatically so crashed workers do not remain healthy forever.
-
-### NATS JetStream
-The intended stream is `TASKFORGE_JOBS`, with subject `taskforge.jobs`, durable consumers, explicit acknowledgements and redelivery. Workers ACK only after durable outcome recording.
-
-### Observability
-Prometheus scrapes `/metrics`. Grafana includes a starter dashboard for submitted/completed/failed jobs, queue depth and worker count. Logs are structured JSON and carry request/job/execution/worker identifiers where available.
-
-### Kubernetes
-Apply:
-
-```bash
-kubectl apply -f k8s/namespace.yaml
-kubectl apply -f k8s/configmap.yaml
-kubectl apply -f k8s/secrets.yaml
-kubectl apply -f k8s/
-```
-
-The sample infrastructure uses single PostgreSQL/Redis/NATS instances for clarity. Gateway and worker deployments demonstrate rolling updates, probes, resources and HPA; the repository does not claim storage-layer high availability.
-
-### Testing
-GoogleTest covers DAG resolution, cycles, weighted scheduling, thread-pool completion/exception isolation and retry calculations. Integration scaffolding describes how to run dependency-backed tests with Compose.
-
-### Load testing
-
-```bash
-k6 run tests/load/k6_benchmark.js
-```
-
-Thresholds cover `http_req_failed` and `http_req_duration`. No benchmark results are fabricated.
-
-## Benchmark Results
-Replace these fields only with measured values:
-- Requests/sec: **MEASURED VALUE**
-- p95 latency: **MEASURED VALUE**
-- p99 latency: **MEASURED VALUE**
-- Maximum concurrent workers: **MEASURED VALUE**
-- Maximum sustainable queue depth: **MEASURED VALUE**
-
-## Performance methodology
-Warm the deployment first, then test increasing concurrency and payload sizes. Record throughput, p50/p95/p99 latency, CPU, memory, queue depth and worker utilization. Investigate database contention, scheduler locks, network latency, serialization overhead, worker saturation, Redis command rate and NATS throughput.
-
-## Security considerations
-Use environment variables/Kubernetes Secrets, validate request bodies, rate-limit clients and run containers as non-root where practical. Production hardening should add TLS, stronger identity, secret rotation, network policies and audit logging.
-
-## Failure scenarios
-- Worker crash: heartbeat expires, worker becomes unavailable, eligible jobs are requeued.
-- NATS restart: durable stream/consumer state permits redelivery.
-- PostgreSQL transient failure: request fails without claiming durable success.
-- Duplicate delivery: idempotency identity prevents a second terminal execution.
-- Retry exhaustion: job enters the DLQ.
-- Gateway overload: rate limiter returns 429.
-
-## Future improvements
-Transactional outbox, stronger distributed leases, OpenTelemetry, multi-region placement, pluggable executors, persistent scheduler state and HA data-plane deployments.
-
-## Resume Highlights
-- Built a distributed job execution platform using C++23, PostgreSQL, Redis and NATS JetStream.
-- Implemented weighted fair scheduling with starvation protection and FIFO ordering.
-- Designed Kahn-based DAG orchestration with concurrent independent branches.
-- Added at-least-once delivery, idempotent consumers, exponential retry and DLQ semantics.
-- Implemented Redis TTL heartbeats and worker-failure reassignment.
-- Exposed REST/gRPC contracts and Prometheus-compatible operational metrics.
-- Containerized services with Docker Compose and Kubernetes probes, resources and HPA.
-- Added deterministic GoogleTest coverage and k6 performance methodology.
+Refer to the project documentation for environment configuration, database initialization, service startup and Kubernetes deployment procedures.
