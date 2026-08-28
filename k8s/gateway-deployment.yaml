@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: gateway, namespace: taskforge}
+spec:
+  replicas: 2
+  strategy: {type: RollingUpdate, rollingUpdate: {maxUnavailable: 0, maxSurge: 1}}
+  selector: {matchLabels: {app: gateway}}
+  template:
+    metadata: {labels: {app: gateway}}
+    spec:
+      containers:
+      - name: gateway
+        image: taskforge/gateway:latest
+        env:
+        - {name: TASKFORGE_PORT, valueFrom: {configMapKeyRef: {name: taskforge-config, key: TASKFORGE_PORT}}}
+        - {name: TASKFORGE_API_TOKEN, valueFrom: {secretKeyRef: {name: taskforge-secrets, key: TASKFORGE_API_TOKEN}}}
+        ports: [{containerPort: 8080}]
+        readinessProbe: {httpGet: {path: /ready, port: 8080}, periodSeconds: 10}
+        livenessProbe: {httpGet: {path: /health, port: 8080}, periodSeconds: 10}
+        resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {cpu: 1, memory: 512Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: gateway, namespace: taskforge}
+spec: {selector: {app: gateway}, ports: [{port: 8080, targetPort: 8080}]}

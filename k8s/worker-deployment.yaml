@@ -1,0 +1,15 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: worker, namespace: taskforge}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: worker}}
+  template:
+    metadata: {labels: {app: worker}}
+    spec:
+      containers:
+      - name: worker
+        image: taskforge/worker:latest
+        env:
+        - {name: TASKFORGE_WORKER_ID, valueFrom: {fieldRef: {fieldPath: metadata.name}}}
+        resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {cpu: 1, memory: 512Mi}}

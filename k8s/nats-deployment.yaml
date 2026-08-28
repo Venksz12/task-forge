@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: nats, namespace: taskforge}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: nats}}
+  template:
+    metadata: {labels: {app: nats}}
+    spec:
+      containers:
+      - name: nats
+        image: nats:2.10
+        args: ["-js"]
+        ports: [{containerPort: 4222}]
+        readinessProbe: {tcpSocket: {port: 4222}, periodSeconds: 10}
+        resources: {requests: {cpu: 50m, memory: 64Mi}, limits: {cpu: 500m, memory: 512Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: nats, namespace: taskforge}
+spec: {selector: {app: nats}, ports: [{port: 4222, targetPort: 4222}]}

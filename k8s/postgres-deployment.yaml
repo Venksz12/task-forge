@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: postgres, namespace: taskforge}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: postgres}}
+  template:
+    metadata: {labels: {app: postgres}}
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16
+        env:
+        - {name: POSTGRES_DB, value: taskforge}
+        - {name: POSTGRES_USER, value: taskforge}
+        - {name: POSTGRES_PASSWORD, valueFrom: {secretKeyRef: {name: taskforge-secrets, key: POSTGRES_PASSWORD}}}
+        ports: [{containerPort: 5432}]
+        readinessProbe: {exec: {command: ["pg_isready","-U","taskforge"]}, periodSeconds: 10}
+        resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {cpu: 500m, memory: 512Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: postgres, namespace: taskforge}
+spec: {selector: {app: postgres}, ports: [{port: 5432, targetPort: 5432}]}

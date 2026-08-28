@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: taskforge
+      POSTGRES_USER: taskforge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-dev}
+    volumes:
+      - taskforge_pg:/var/lib/postgresql/data
+      - ../database/schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL","pg_isready -U taskforge -d taskforge"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  redis:
+    image: redis:7
+    healthcheck: {test: ["CMD","redis-cli","ping"], interval: 5s, timeout: 3s, retries: 10}
+  nats:
+    image: nats:2.10
+    command: ["-js","-sd","/data"]
+    volumes: [taskforge_nats:/data]
+  gateway:
+    build: {context: .., dockerfile: docker/Dockerfile.gateway}
+    environment: {TASKFORGE_PORT: "8080", TASKFORGE_API_TOKEN: ${TASKFORGE_API_TOKEN:-dev-token}
+      TASKFORGE_PG_DSN: host=postgres port=5432 dbname=taskforge user=taskforge password=${POSTGRES_PASSWORD:-change-me-in-dev}
+    depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}}
+    ports: ["8080:8080"]
+  scheduler:
+    build: {context: .., dockerfile: docker/Dockerfile.scheduler}
+    depends_on: [nats, postgres]
+  worker:
+    build: {context: .., dockerfile: docker/Dockerfile.worker}
+    environment: {TASKFORGE_WORKER_ID: worker-1, TASKFORGE_PG_DSN: "host=postgres port=5432 dbname=taskforge user=taskforge password=change-me-in-dev", TASKFORGE_NATS_HOST: nats, TASKFORGE_REDIS_HOST: redis}
+    depends_on: [nats, redis]
+  frontend:
+    build: {context: .., dockerfile: docker/Dockerfile.frontend}
+    environment: {NEXT_PUBLIC_API_BASE_URL: http://localhost:8080}
+    depends_on: [gateway]
+    ports: ["3000:3000"]
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    volumes: [./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro]
+    ports: ["9090:9090"]
+  grafana:
+    image: grafana/grafana:11.1.0
+    volumes: [./grafana/dashboard.json:/var/lib/grafana/dashboards/taskforge.json:ro, ./grafana/provisioning/dashboards.yml:/etc/grafana/provisioning/dashboards.yml:ro]
+    ports: ["3001:3000"]
+volumes: {taskforge_pg: {}, taskforge_nats: {}}

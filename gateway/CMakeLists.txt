@@ -1,0 +1,6 @@
+add_executable(taskforge_gateway src/main.cpp src/http_server.cpp)
+target_include_directories(taskforge_gateway PRIVATE include)
+target_link_libraries(taskforge_gateway PRIVATE taskforge_common)
+find_package(Boost 1.82 REQUIRED COMPONENTS system)
+find_package(PostgreSQL REQUIRED)
+target_link_libraries(taskforge_gateway PRIVATE Boost::system PostgreSQL::PostgreSQL)

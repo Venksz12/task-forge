@@ -1,0 +1,7 @@
+syntax = "proto3";
+package taskforge.v1;
+import "common.proto";
+service WorkerManager { rpc RegisterWorker(WorkerInfo) returns (WorkerReply); rpc Heartbeat(WorkerInfo) returns (WorkerReply); rpc DeregisterWorker(JobRef) returns (Empty); rpc GetWorkers(Empty) returns (WorkersReply); }
+message WorkerInfo { string worker_id=1; string hostname=2; uint32 capacity=3; string version=4; }
+message WorkerReply { bool accepted=1; string status=2; }
+message WorkersReply { repeated WorkerInfo workers=1; }

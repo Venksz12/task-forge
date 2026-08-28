@@ -1,0 +1,5 @@
+apiVersion: 1
+providers:
+  - name: TaskForge
+    type: file
+    options: {path: /var/lib/grafana/dashboards}

@@ -1,0 +1,6 @@
+syntax = "proto3";
+package taskforge.v1;
+import "common.proto";
+service JobService { rpc SubmitJob(SubmitJobRequest) returns (JobReply); rpc GetJob(JobRef) returns (JobReply); rpc CancelJob(JobRef) returns (JobReply); rpc RetryJob(JobRef) returns (JobReply); rpc StreamJobEvents(JobRef) returns (stream Event); }
+message SubmitJobRequest { string name=1; string priority=2; string payload_json=3; uint32 max_attempts=4; int64 timeout_ms=5; }
+message JobReply { string job_id=1; string execution_id=2; string status=3; uint32 attempt=4; }

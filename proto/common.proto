@@ -1,0 +1,5 @@
+syntax = "proto3";
+package taskforge.v1;
+message Empty {}
+message JobRef { string job_id = 1; }
+message Event { string event_id=1; string job_id=2; string type=3; string payload_json=4; int64 occurred_unix_ms=5; }

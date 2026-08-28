@@ -1,0 +1,5 @@
+find_package(GTest REQUIRED)
+add_executable(taskforge_tests unit/test_core.cpp)
+target_link_libraries(taskforge_tests PRIVATE taskforge_common GTest::gtest_main)
+include(GoogleTest)
+gtest_discover_tests(taskforge_tests)

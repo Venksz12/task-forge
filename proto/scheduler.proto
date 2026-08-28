@@ -1,0 +1,6 @@
+syntax = "proto3";
+package taskforge.v1;
+import "common.proto";
+service SchedulerService { rpc ScheduleJob(JobRef) returns (SchedulerReply); rpc GetQueueStats(Empty) returns (QueueStats); }
+message SchedulerReply { string job_id=1; string status=2; }
+message QueueStats { uint64 high=1; uint64 normal=2; uint64 low=3; }
