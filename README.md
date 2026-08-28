@@ -1,4 +1,4 @@
-# TaskForge — Distributed Job Execution & Workflow Engine
+# TaskForge ( Distributed Job Execution & Workflow Engine)
 
 TaskForge is a distributed job execution and workflow orchestration platform developed using **C++23, PostgreSQL, Redis, NATS JetStream, and Next.js**. The project demonstrates practical distributed-systems concepts including concurrent job execution, priority scheduling, DAG-based workflow orchestration, fault tolerance, retries, worker failure recovery, idempotency, observability, and containerized deployment.
 
