@@ -28,7 +28,7 @@ TaskForge is a distributed job execution and workflow orchestration platform dev
                                    ▼
                          ┌──────────────────────┐
                          │   NATS JetStream     │
-                         │ Durable Job Events    │
+                         │ Durable Job Events   │
                          └──────────┬───────────┘
                                     │
                    ┌────────────────┼────────────────┐
